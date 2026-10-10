@@ -12,6 +12,7 @@ mod tray;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
@@ -45,7 +46,7 @@ fn main() -> ExitCode {
         Instance::Primary(rx) => rx,
     };
     let (tray_loop, woken) = sync_channel(1);
-    let waker = Arc::new(Waker { window: Mutex::new(None), tray_loop });
+    let waker = Arc::new(Waker { window: Mutex::new(None), tray_loop, quit_pending: AtomicBool::new(false) });
     {
         let waker = waker.clone();
         let _ = wake.set(Box::new(move || waker.wake()));
@@ -173,7 +174,12 @@ fn wgpu_options() -> eframe::WgpuConfiguration {
 struct Waker {
     window: Mutex<Option<egui::Context>>,
     tray_loop: SyncSender<()>,
+    /// Quit was picked in the tray and no tick has taken it up yet.
+    quit_pending: AtomicBool,
 }
+
+/// How long a tray Quit may wait for the window to take it up before the launcher exits anyway.
+const QUIT_GRACE: Duration = Duration::from_secs(2);
 
 impl Waker {
     fn wake(&self) {
@@ -181,6 +187,30 @@ impl Waker {
             ctx.request_repaint();
         }
         let _ = self.tray_loop.try_send(());
+    }
+
+    /// Quit was picked in the tray. A minimized window may get no frames at all (Wayland sends none),
+    /// so the quit would wait until the window is restored: if no tick has taken it up in time, exit.
+    fn quit_from_tray(self: &Arc<Self>) {
+        self.quit_pending.store(true, Ordering::SeqCst);
+        let waker = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(QUIT_GRACE);
+            if waker.quit_unseen() {
+                log::warn!("the window did not answer a quit from the tray: exiting");
+                std::process::exit(0);
+            }
+        });
+    }
+
+    /// A tick took up the quit.
+    fn quit_seen(&self) {
+        self.quit_pending.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether a quit from the tray is still waiting (and no longer is).
+    fn quit_unseen(&self) -> bool {
+        self.quit_pending.swap(false, Ordering::SeqCst)
     }
 
     fn set_window(&self, ctx: Option<egui::Context>) {
@@ -317,6 +347,7 @@ struct Launcher {
     closed_to_tray: bool,
     /// eframe's settings file, which the launcher writes itself while there is no window.
     settings_path: Option<PathBuf>,
+    waker: Option<Arc<Waker>>,
 }
 
 impl Launcher {
@@ -336,6 +367,7 @@ impl Launcher {
             started: false,
             closed_to_tray: false,
             settings_path,
+            waker: None,
         }
     }
 
@@ -346,8 +378,9 @@ impl Launcher {
         if let Some(settings) = settings {
             self.ui.settings = settings;
         }
-        let waker = waker.clone();
-        match tray::Tray::new(move || waker.wake()) {
+        self.waker = Some(waker.clone());
+        let (wake, on_quit) = (waker.clone(), waker.clone());
+        match tray::Tray::new(move || wake.wake(), move || on_quit.quit_from_tray()) {
             Ok(t) => self.tray = Some(t),
             Err(e) => log::warn!("no tray icon: {e}"),
         }
@@ -391,7 +424,12 @@ impl Launcher {
                         log::warn!("couldn't open {url}: {e}");
                     }
                 }
-                tray::TrayAction::Quit => requests.push(Request::Quit),
+                tray::TrayAction::Quit => {
+                    if let Some(waker) = &self.waker {
+                        waker.quit_seen();
+                    }
+                    requests.push(Request::Quit);
+                }
             }
         }
         if let Some(t) = self.tray.as_mut() {
@@ -766,6 +804,17 @@ mod tests {
         launcher.host.quit();
         assert!(!launcher.wait_in_tray(&woken));
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_tray_quit_nobody_took_up_ends_the_launcher() {
+        let (tray_loop, _woken) = sync_channel(1);
+        let waker = Waker { window: Mutex::new(None), tray_loop, quit_pending: AtomicBool::new(true) };
+        assert!(waker.quit_unseen());
+        assert!(!waker.quit_unseen());
+        waker.quit_pending.store(true, Ordering::SeqCst);
+        waker.quit_seen();
+        assert!(!waker.quit_unseen());
     }
 
     #[test]
