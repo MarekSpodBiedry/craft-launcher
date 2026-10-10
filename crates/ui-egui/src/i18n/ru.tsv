@@ -34,7 +34,6 @@
 	Sort	Сортировка
 	Suite order	По классу приложений
 	Name	Имя
-	Inspired by	Вдохновлено
 	Status	Статус
 	Installed version	Установленная версия
 	Latest version	Последняя версия
@@ -211,7 +210,6 @@ month	Dec	дек.
 	Descending	По убыванию
 	Click to reverse the order	Нажмите, чтобы изменить порядок
 	Click to sort by this column	Нажмите, чтобы сортировать по этому столбцу
-	Like {name}	Аналог {name}
 	{done} of {total}	{done} из {total}
 	Downloading	Скачивание
 	Verifying checksum…	Проверка контрольной суммы…
@@ -295,7 +293,6 @@ filter	Installed	Установлены
 @id	filter.notinstalled	Не установленные
 @id	sort.suite	По классу приложений
 @id	sort.name	Имя
-@id	sort.inspired	Вдохновлено
 @id	sort.status	Статус
 @id	sort.installed	Установленная версия
 @id	sort.latest	Последняя версия

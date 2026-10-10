@@ -21,7 +21,6 @@
 	Sort	排序
 	Suite order	默认顺序
 	Name	名称
-	Inspired by	参考软件
 	Status	状态
 	Installed version	已安装版本
 	Latest version	最新版本
@@ -136,7 +135,6 @@ month	Dec	12月
 	Descending	降序
 	Click to reverse the order	点击切换排序方向
 	Click to sort by this column	点击按此列排序
-	Like {name}	类似 {name}
 	{done} of {total}	{done} / {total}
 	Downloading	正在下载
 	Verifying checksum…	正在验证校验和…
@@ -200,7 +198,6 @@ filter	Installed	已安装
 @id	filter.notinstalled	未安装
 @id	sort.suite	默认顺序
 @id	sort.name	名称
-@id	sort.inspired	参考软件
 @id	sort.status	状态
 @id	sort.installed	已安装版本
 @id	sort.latest	最新版本

@@ -50,7 +50,7 @@
   <img src="docs/screenshots/artcraft-launcher-grid.png" alt="ArtCraft Launcher on macOS in the grid view (dark theme): a card for each Craft App with its icon, status, version, release date and an Install or Open button, grouped into classic and new apps" width="900">
 </p>
 <p align="center">
-  <img src="docs/screenshots/artcraft-launcher-table.png" alt="The same apps in the table view (light theme), with columns for what each app is inspired by, its status, installed and latest versions, and release date" width="900"><br>
+  <img src="docs/screenshots/artcraft-launcher-table.png" alt="The same apps in the table view (light theme), with columns for each app's status, installed and latest versions, and release date" width="900"><br>
   <sub>Switch between the grid and a sortable table.</sub>
 </p>
 
@@ -276,8 +276,6 @@ logo in the launcher's header and the "A" tray icon)
 are trademarks of the ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
 part of this repository and ArtCraft Launcher, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
 Forks and modified versions must remove them.
-
-<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are either registered trademarks or trademarks of Adobe in the United States and/or other countries. Microsoft, Word, PowerPoint and Excel are trademarks of the Microsoft group of companies. Autodesk and AutoCAD are registered trademarks or trademarks of Autodesk, Inc. Avid and Pro Tools are trademarks or registered trademarks of Avid Technology, Inc. All other trademarks are the property of their respective owners. These names are used only to describe what each Craft App is for; the Craft App Suite is independent and is not affiliated with, sponsored by or endorsed by any of these companies.</sub>
 
 <p align="center">
   <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>

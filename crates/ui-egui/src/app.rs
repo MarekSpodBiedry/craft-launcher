@@ -428,7 +428,6 @@ impl LauncherUi {
                             ViewMode::Table => self.table(ui, &ids),
                         }
                     }
-                    self.trademark_notice(ui);
                     ui.add_space(16.0);
                 });
             });
@@ -456,8 +455,7 @@ impl LauncherUi {
                 };
                 keep && (needle.is_empty()
                     || e.app.name.to_lowercase().contains(&needle)
-                    || e.app.tagline.to_lowercase().contains(&needle)
-                    || e.app.like.to_lowercase().contains(&needle))
+                    || e.app.tagline.to_lowercase().contains(&needle))
             })
             .collect();
         let platform = self.platform;
@@ -477,7 +475,6 @@ impl LauncherUi {
             let ord = match self.settings.sort {
                 SortKey::Suite => dir(ia.cmp(ib)),
                 SortKey::Name => dir(a.app.name.cmp(b.app.name)),
-                SortKey::InspiredBy => dir(a.app.like.cmp(b.app.like)),
                 SortKey::Status => {
                     dir(crate::model::status_rank(&a.status(platform, manage)).cmp(&crate::model::status_rank(&b.status(platform, manage))))
                 }

@@ -201,11 +201,9 @@ fn grid_shows_every_status_and_installs_on_click() {
     h.get_by_label("Update to 0.5.0");
     h.get_by_label("Update to 0.6.0");
     h.get_by_label_contains("0.4.1 installed → 0.5.0 released");
-    h.get_by_label("Like Adobe Photoshop®");
     // The window has no title bar of its own here (the web build, and the tests).
     assert!(h.query_by_label("Close").is_none());
     assert!(h.query_all_by_label_contains("Discord").count() >= 2); // header link and footer link
-    h.get_by_label_contains("Adobe, Photoshop, Illustrator");
     assert!(h.query_all_by_label("Coming soon").count() >= 1);
     h.get_by_label_contains("48 MB of 131 MB");
     h.get_by_label("Update all (2)").click();
@@ -367,9 +365,6 @@ fn table_view_and_light_theme() {
     let (mut h, sent) = harness(ViewMode::Table, egui::Theme::Light, true);
     h.run_steps(8);
     snapshot(&mut h, "table-light");
-    h.get_by_label("Adobe Photoshop®");
-    h.get_by_label("Microsoft Excel®");
-    h.get_by_label_contains("Avid and Pro Tools are trademarks");
     h.get_by_label("Update to 0.5.0").click();
     h.run_steps(2);
     assert!(sent.borrow().contains(&Command::Install { app: "photocraft".into() }));
@@ -411,7 +406,7 @@ fn name_and_tagline_are_centred_on_the_icon() {
         let (mut h, _) = harness_at(ViewMode::Grid, egui::Theme::Dark, true, scale);
         h.run_steps(8);
         snapshot(&mut h, &format!("grid-dark{suffix}"));
-        let off = below_icon_centre(&h, &["PhotoCraft", "Image editing", "Like Adobe Photoshop®"]);
+        let off = below_icon_centre(&h, &["PhotoCraft", "Image editing"]);
         assert!(off.abs() < 0.25, "grid at {scale}x: {off}");
         let (mut h, _) = harness_at(ViewMode::Table, egui::Theme::Light, true, scale);
         h.run_steps(8);
@@ -453,11 +448,6 @@ fn every_table_column_sorts_both_ways() {
     h.run_steps(3);
     let o = order(&h);
     assert_eq!(&o[..4], ["WordCraft", "LightCraft", "PhotoCraft", "EffectCraft"], "{o:?}");
-    // Inspired by: A to Z.
-    h.get_by_label("Inspired by").click();
-    h.run_steps(3);
-    let o = order(&h);
-    assert_eq!(o.first().map(String::as_str), Some("PdfCraft"), "{o:?}"); // Adobe Acrobat
     // Latest: highest version first, SoundCraft (no release) last.
     h.get_by_label("Latest").click();
     h.run_steps(3);
