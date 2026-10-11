@@ -282,6 +282,21 @@ fn no_window() -> egui::RawInput {
     egui::RawInput { focused: false, viewports: std::iter::once((egui::ViewportId::ROOT, viewport)).collect(), ..Default::default() }
 }
 
+/// macOS sends notifications on behalf of a bundle id. When none is set, the library looks up an app named
+/// "use_default" and macOS asks the user "Where is use_default?". Set ours before the first notification.
+/// The library accepts only one call (even a failed one skips that lookup), so the first outcome is kept and logged once.
+#[cfg(target_os = "macos")]
+fn claim_notification_identity() -> &'static Result<(), String> {
+    static CLAIMED: OnceLock<Result<(), String>> = OnceLock::new();
+    CLAIMED.get_or_init(|| {
+        let claimed = notify_rust::set_application(APP_ID).map_err(|e| e.to_string());
+        if let Err(e) = &claimed {
+            log::warn!("notification identity {APP_ID}: {e}");
+        }
+        claimed
+    })
+}
+
 struct DesktopHost {
     tray: bool,
     quit: bool,
@@ -296,6 +311,8 @@ impl Host for DesktopHost {
         let (title, body) = (title.to_string(), body.to_string());
         // Some platforms block while the notification is delivered.
         std::thread::spawn(move || {
+            #[cfg(target_os = "macos")]
+            claim_notification_identity();
             let mut n = notify_rust::Notification::new();
             n.summary(&title).body(&body).appname("ArtCraft Launcher");
             #[cfg(windows)]
@@ -612,6 +629,15 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_791_500_000;
+
+    /// The bundle id is set once: asking again gives the first outcome, not the library's "already set" error.
+    /// (Setting it fails where the launcher is not installed, so the outcome itself is not asserted.)
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notification_identity_is_claimed_once() {
+        let first = claim_notification_identity();
+        assert_eq!(claim_notification_identity(), first);
+    }
 
     /// What the tests can see of a [`Quiet`] backend, and its clock.
     #[derive(Default)]
