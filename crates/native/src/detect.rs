@@ -232,7 +232,11 @@ pub mod linux {
         if let Some(list) = capture("rpm", &["-qa", "--qf", "%{NAME}|%{VERSION}\n"], t) {
             add(InstallSource::Rpm, packages::parse_rpm(&list));
         }
-        if let Some(list) = capture("pacman", &["-Q"], t) {
+        // Only run `pacman` where its database exists: elsewhere `pacman` on PATH may be an unrelated program
+        // (the Pac-Man game in /usr/games on Debian-family systems).
+        if pacman_db_present(Path::new(PACMAN_DB))
+            && let Some(list) = capture("pacman", &["-Q"], t)
+        {
             add(InstallSource::Pacman, packages::parse_pacman(&list));
         }
         let arch = format!("--arch={}", std::env::consts::ARCH);
@@ -247,6 +251,14 @@ pub mod linux {
             add(InstallSource::Flatpak, flatpaks);
         }
         out
+    }
+
+    /// The local package database of Arch's pacman.
+    const PACMAN_DB: &str = "/var/lib/pacman/local";
+
+    /// True when `db` is a directory, i.e. this system really uses pacman.
+    pub(crate) fn pacman_db_present(db: &Path) -> bool {
+        db.is_dir()
     }
 
     /// Where a package put the app's binary: on `PATH`, else `/usr/bin/<id>`.
@@ -382,6 +394,14 @@ mod linux_tests {
         assert!(ours("photocraft"));
         assert!(ours("ai.storyteller.photocraft"));
         assert!(!ours("unrelated-package"));
+    }
+
+    #[test]
+    fn pacman_is_only_queried_where_its_database_exists() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!linux::pacman_db_present(&root.path().join("local")));
+        std::fs::create_dir(root.path().join("local")).unwrap();
+        assert!(linux::pacman_db_present(&root.path().join("local")));
     }
 
     #[test]
