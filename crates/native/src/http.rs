@@ -55,8 +55,11 @@ impl Http {
         // and trusts what antivirus HTTPS scanning installs. Reading the store ourselves missed
         // both ("invalid peer certificate: UnknownIssuer").
         let tls = || ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+        // Chosen once: the proxy environment variables, else the OS proxy setting.
+        let proxy = crate::proxy::pick();
         let small = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_global(Some(Duration::from_secs(20)))
             .http_status_as_error(false)
             .user_agent(USER_AGENT)
@@ -64,6 +67,7 @@ impl Http {
             .new_agent();
         let feed = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_connect(Some(Duration::from_secs(5)))
             .timeout_global(Some(Duration::from_secs(10)))
             .http_status_as_error(false)
@@ -72,6 +76,7 @@ impl Http {
             .new_agent();
         let no_redirect = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_global(Some(Duration::from_secs(20)))
             .http_status_as_error(false)
             .max_redirects(0)
@@ -81,6 +86,7 @@ impl Http {
             .new_agent();
         let download = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_connect(Some(Duration::from_secs(20)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
             // ureq has no idle timeout: cap each attempt instead, and resume where it stopped.
@@ -120,12 +126,11 @@ impl Http {
             404 => Ok(Fetched::NotFound),
             403 | 429 => {
                 let remaining = header("x-ratelimit-remaining");
-                let reset = header("x-ratelimit-reset").and_then(|r| r.parse::<i64>().ok());
-                let retry_after = header("retry-after").and_then(|r| r.parse::<i64>().ok()).map(|s| crate::now() + s);
-                if status == 429 || remaining.as_deref() == Some("0") || retry_after.is_some() {
-                    Ok(Fetched::RateLimited { reset: reset.or(retry_after) })
-                } else {
-                    Err(format!("GitHub refused the request (HTTP {status})"))
+                let reset = header("x-ratelimit-reset").and_then(|r| r.trim().parse::<i64>().ok());
+                let retry_after = header("retry-after").and_then(|r| r.trim().parse::<i64>().ok());
+                match refused_until(status, remaining.as_deref(), reset, retry_after, crate::now()) {
+                    Some(reset) => Ok(Fetched::RateLimited { reset }),
+                    None => Err(format!("GitHub refused the request (HTTP {status})")),
                 }
             }
             s => Err(format!("GitHub answered HTTP {s}")),
@@ -496,6 +501,25 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(hex(&hasher.finalize()))
 }
 
+/// Whether a 403 or 429 from GitHub's API means "slow down", and until when (Unix seconds, when
+/// it says). `None`: refused for some other reason.
+///
+/// GitHub sends `x-ratelimit-reset` with every answer: it's when the hourly quota refills, which
+/// only matters once `x-ratelimit-remaining` is 0. A secondary limit says how long to wait in
+/// `Retry-After` (seconds) and leaves the hourly quota alone; without either, GitHub's advice is
+/// to wait a minute.
+fn refused_until(status: u16, remaining: Option<&str>, reset: Option<i64>, retry_after: Option<i64>, now: i64) -> Option<Option<i64>> {
+    let retry = retry_after.map(|secs| now.saturating_add(secs.max(0)));
+    if remaining.map(str::trim) == Some("0") {
+        // `None` sorts first: whichever of the two is known, and the later if both are.
+        return Some(reset.max(retry));
+    }
+    if retry.is_some() {
+        return Some(retry);
+    }
+    (status == 429).then_some(Some(now.saturating_add(60)))
+}
+
 fn host(url: &str) -> &str {
     url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url)
 }
@@ -803,6 +827,61 @@ pub(crate) mod tests {
         let dest = dir.path().join(&asset.name);
         http.download(&asset.url, &dest, asset.size, Some(&sha), &Stop::default(), &mut |_| {}).unwrap();
         assert_eq!(std::fs::metadata(&dest).unwrap().len(), asset.size);
+    }
+
+    /// Answers one request with `head` (status line and headers) and an empty body.
+    fn answer_once(head: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/repos/storytold/photocraft/releases/latest", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let _ = write!(stream, "{head}Content-Length: 0\r\nConnection: close\r\n\r\n");
+        });
+        url
+    }
+
+    #[test]
+    fn a_secondary_limit_waits_for_retry_after_not_the_hourly_reset() {
+        // GitHub's secondary limit: quota left, an hourly reset 50 minutes away, and "try again
+        // in a minute". That's a minute, not 50 minutes of "the hourly limit was reached".
+        let now = crate::now();
+        let url = answer_once(format!(
+            "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 41\r\nx-ratelimit-reset: {}\r\nretry-after: 60\r\n",
+            now + 50 * 60
+        ));
+        let Fetched::RateLimited { reset: Some(until) } = Http::new().unwrap().get_api(&url, None).unwrap() else { panic!("not rate limited") };
+        assert!((now + 60..now + 120).contains(&until), "limited for {} s", until - now);
+    }
+
+    #[test]
+    fn an_empty_hourly_quota_waits_for_the_reset() {
+        let now = crate::now();
+        let reset = now + 31 * 60;
+        let url = answer_once(format!("HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: {reset}\r\n"));
+        assert_eq!(Http::new().unwrap().get_api(&url, None).unwrap(), Fetched::RateLimited { reset: Some(reset) });
+    }
+
+    #[test]
+    fn github_refusals_are_read_the_way_github_documents_them() {
+        const NOW: i64 = 1_791_500_000;
+        // Out of quota: until the reset, or Retry-After if that's later.
+        assert_eq!(refused_until(403, Some("0"), Some(NOW + 1800), None, NOW), Some(Some(NOW + 1800)));
+        assert_eq!(refused_until(403, Some("0"), Some(NOW + 30), Some(90), NOW), Some(Some(NOW + 90)));
+        assert_eq!(refused_until(403, Some("0"), None, None, NOW), Some(None));
+        // A secondary limit: Retry-After, never the hourly reset.
+        assert_eq!(refused_until(429, Some("12"), Some(NOW + 1800), Some(30), NOW), Some(Some(NOW + 30)));
+        // A 429 that doesn't say: a minute.
+        assert_eq!(refused_until(429, Some("12"), Some(NOW + 1800), None, NOW), Some(Some(NOW + 60)));
+        // A plain 403 (blocked, private, …) isn't a rate limit.
+        assert_eq!(refused_until(403, Some("12"), Some(NOW + 1800), None, NOW), None);
+        assert_eq!(refused_until(403, None, None, None, NOW), None);
     }
 
     #[test]

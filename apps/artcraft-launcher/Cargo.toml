@@ -12,6 +12,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Development only: install from `cargo xtask local serve` (see the README).
+local-mirror = ["artcraft-launcher-native/local-mirror"]
+
 [dependencies]
 artcraft-launcher-core = { workspace = true }
 artcraft-launcher-ui-egui = { workspace = true }

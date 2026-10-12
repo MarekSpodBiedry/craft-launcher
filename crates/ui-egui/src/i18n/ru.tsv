@@ -74,6 +74,8 @@
 	ArtCraft Launcher {version} is available.	Доступен ArtCraft Launcher {version}.
 	Dismiss	Закрыть
 	Update and restart	Обновить и перезапустить
+	A new version is available. Would you like to relaunch with the updated version?	Доступна новая версия. Перезапустить с обновленной версией?
+	Later	Позже
 	What's new	Что нового
 	No notes were published with this release.	Заметки к этому релизу не публиковались.
 	Released {date}	Релиз {date}
@@ -81,6 +83,7 @@
 	Close	Закрыть
 	ArtCraft Launcher {version}	ArtCraft Launcher {version}
 	Only when I ask	Только по запросу
+	Automatically download and install updates	Автоматически скачивать и устанавливать обновления
 	Notify me when an installed app has an update	Уведомлять, когда у установленного приложения есть обновление
 	Include pre-releases (betas and release candidates)	Включать предварительные релизы (бета и RC)
 	Installing on Linux	Установка в Linux
@@ -177,6 +180,7 @@ month	Nov	нояб.
 month	Dec	дек.
 	Not checked yet	Ещё не проверялось
 	GitHub's hourly limit was reached; full details return in {min} min	Достигнут часовой лимит GitHub; полные детали вернутся через {min} мин
+	GitHub limit hit; back in {min} min	Лимит GitHub исчерпан; вернётся через {min} мин
 	Installing for {platform}	Установка для {platform}
 	Downloads for {platform}	Скачивание для {platform}
 	No downloads for this system	Нет загрузок для этой системы
@@ -219,7 +223,6 @@ month	Dec	дек.
 	Checking for updates…	Проверка обновлений…
 	Downloads the new version, replaces this one and opens it again	Скачивает новую версию, заменяет текущую и открывает её заново
 	Couldn't check for updates: {f}	Не удалось проверить обновления: {f}
-	Website (coming soon)	Веб-сайт (скоро)
 	GitHub repository	Репозиторий GitHub
 	ArtCraft	ArtCraft
 	Update 1 app	Обновить 1 приложение

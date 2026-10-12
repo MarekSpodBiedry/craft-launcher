@@ -42,7 +42,8 @@ fn load_icon() -> Result<tray_icon::Icon, String> {
 
 impl Tray {
     /// Creates the tray icon. `wake` repaints the UI so it sees the action, even when hidden.
-    pub fn new(wake: impl Fn() + Send + Sync + Clone + 'static) -> Result<Self, String> {
+    /// `on_quit` runs when Quit is picked, before the UI can see it: the UI may never get to.
+    pub fn new(wake: impl Fn() + Send + Sync + Clone + 'static, on_quit: impl Fn() + Send + Sync + 'static) -> Result<Self, String> {
         let show = MenuItem::new(i18n::t("Show ArtCraft Launcher"), true, None);
         let check = MenuItem::new(i18n::t("Check for Updates"), true, None);
         use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, WEBSITE_URL};
@@ -80,6 +81,9 @@ impl Tray {
                 } else {
                     return;
                 };
+                if matches!(action, TrayAction::Quit) {
+                    on_quit();
+                }
                 let _ = tx.send(action);
                 wake();
             }));

@@ -47,7 +47,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/artcraft-launcher-grid.png" alt="ArtCraft Launcher on macOS in the grid view (dark theme): a card for each Craft App with its icon, status, version, release date and an Install or Open button, grouped into classic and new apps" width="900">
+  <img src="docs/screenshots/artcraft-launcher-grid.png" alt="ArtCraft Launcher on macOS in the grid view (dark theme): a card for each Craft App with its icon, status, version, release date and an Install or Open button" width="900">
 </p>
 <p align="center">
   <img src="docs/screenshots/artcraft-launcher-table.png" alt="The same apps in the table view (light theme), with columns for each app's status, installed and latest versions, and release date" width="900"><br>
@@ -84,12 +84,15 @@ The web version shows the same catalog in the browser, with the latest download 
 
 ## Interface languages
 
-The interface is in English, Russian (Русский) or Simplified Chinese (简体中文). **Auto**, the
-default, follows the system or browser language; **Settings → Language** picks one and switches
-at once, and the choice is kept between runs. Simplified Chinese locales (`zh-CN`, `zh-SG`,
-`zh-Hans`, and POSIX forms such as `zh_CN.UTF-8`) select Chinese; Traditional Chinese ones don't.
-To try a language without changing the setting, start the desktop app with
-`ARTCRAFT_LAUNCHER_LOCALE=zh-CN`, or add `?lang=ru` to the web address.
+The interface is in English, Brazilian Portuguese (Português (Brasil)), French (Français), German
+(Deutsch), Russian (Русский) or Simplified Chinese (简体中文). **Auto**, the default, follows the
+system or browser language; **Settings → Language** picks one and switches at once, and the choice
+is kept between runs. German locales (`de-DE`, `de-AT`, `de-CH`, `de_DE.UTF-8`…) select German,
+French ones (`fr-FR`, `fr-CA`…) French, and Portuguese ones (`pt-BR`, and `pt-PT` too, for now)
+Brazilian Portuguese. Simplified Chinese locales (`zh-CN`, `zh-SG`, `zh-Hans`, and POSIX forms such
+as `zh_CN.UTF-8`) select Chinese; Traditional Chinese ones don't. To try a language without changing
+the setting, start the desktop app with `ARTCRAFT_LAUNCHER_LOCALE=pt-BR`, or add `?lang=ru` to the
+web address.
 
 Chinese is drawn with the system's own Chinese font (PingFang on macOS, Microsoft YaHei on
 Windows, Noto Sans CJK or WenQuanYi on Linux and FreeBSD). Where there is none, and in the web
@@ -145,6 +148,8 @@ Download the build for your computer from the [latest release](https://github.co
 | `artcraft-launcher-<ver>-linux-{x86_64,aarch64}.flatpak` | Flatpak bundle: `flatpak install --user artcraft-launcher-…flatpak`. Inside the sandbox the launcher can download apps but has limited power to install them on the host; prefer the AppImage, .deb or .rpm |
 | `artcraft-launcher-<ver>-linux-{x86_64,aarch64}.tar.gz` | Plain tree (`bin/`, `share/`) for everyone else and for scripts |
 
+RISC-V (riscv64): `artcraft-launcher-<ver>-linux-riscv64.{deb,rpm,tar.gz}`, built against Ubuntu 24.04 (needs glibc 2.39+).
+
 The tray icon uses the StatusNotifierItem standard: KDE, Xfce, Cinnamon and most other desktops show it; on GNOME install the AppIndicator extension.
 
 **FreeBSD** (14, x86_64)
@@ -184,6 +189,25 @@ rustup target add wasm32-unknown-unknown
 cd apps/artcraft-launcher-web && trunk serve
 ```
 
+### Installing your own builds
+
+To install and update the Craft apps from checkouts on your machine instead of GitHub, clone them
+next to this repo (`../photocraft`, `../wordcraft`, …) and run:
+
+```sh
+cargo xtask local sync      # git pull every app, build and package each new version into ../local-mirror
+cargo xtask local serve     # serve the builds and a release feed on http://127.0.0.1:8787/
+ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run --release -p artcraft-launcher --features local-mirror
+```
+
+Run `sync` again whenever you want updates, or let the server do it: `cargo xtask local serve
+--sync-every 1h` pulls and builds on that interval while it serves. An app is rebuilt when its
+checkout's version isn't in the mirror yet (`--rebuild` forces it), and the launcher's next check
+picks it up. Add `--every-commit` to build every new commit instead, as a dev version between
+releases (`0.4.0` builds as `0.4.1-dev.<commit time>`), which the launcher offers as an update. While
+`ARTCRAFT_LAUNCHER_DOWNLOAD_BASE` is set (loopback addresses only), the launcher asks only the
+mirror, never GitHub. Only builds with the `local-mirror` feature read it; releases never have it. `cargo xtask local help` lists the options (`--only`, `--no-pull`, `--arch`, …).
+
 New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md). Release packaging lives in
 [`packaging/`](packaging/) and [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
@@ -208,10 +232,10 @@ stand on its own.
 | <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
 | <img src="https://raw.githubusercontent.com/storytold/gridcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.gridcraft.png" alt="" width="32" height="32"> | **GridCraft** | Spreadsheets and data | [GitHub](https://github.com/storytold/gridcraft) | [Website](https://getartcraft.com/apps/gridcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/wordcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.wordcraft.png" alt="" width="32" height="32"> | **WordCraft** | Word processing and documents | [GitHub](https://github.com/storytold/wordcraft) | [Releases](https://github.com/storytold/wordcraft/releases) |
-| <img src="https://raw.githubusercontent.com/storytold/deckcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.deckcraft.png" alt="" width="32" height="32"> | **DeckCraft** | Presentations and slide decks | [GitHub](https://github.com/storytold/deckcraft) | [Releases](https://github.com/storytold/deckcraft/releases) |
-| <img src="https://raw.githubusercontent.com/storytold/cadcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.cadcraft.png" alt="" width="32" height="32"> | **CADCraft** | Computer-aided design | [GitHub](https://github.com/storytold/cadcraft) | [Releases](https://github.com/storytold/cadcraft/releases) |
-| <img src="https://raw.githubusercontent.com/storytold/soundcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.soundcraft.png" alt="" width="32" height="32"> | **SoundCraft** | Audio recording and editing | [GitHub](https://github.com/storytold/soundcraft) | [Releases](https://github.com/storytold/soundcraft/releases) |
+| <img src="https://raw.githubusercontent.com/storytold/wordcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.wordcraft.png" alt="" width="32" height="32"> | **WordCraft** | Word processing and documents | [GitHub](https://github.com/storytold/wordcraft) | [Website](https://getartcraft.com/apps/wordcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/deckcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.deckcraft.png" alt="" width="32" height="32"> | **DeckCraft** | Presentations and slide decks | [GitHub](https://github.com/storytold/deckcraft) | [Website](https://getartcraft.com/apps/deckcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/cadcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.cadcraft.png" alt="" width="32" height="32"> | **CADCraft** | Computer-aided design | [GitHub](https://github.com/storytold/cadcraft) | [Website](https://getartcraft.com/apps/cadcraft) |
+| <img src="https://raw.githubusercontent.com/storytold/soundcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.soundcraft.png" alt="" width="32" height="32"> | **SoundCraft** | Audio recording and editing | [GitHub](https://github.com/storytold/soundcraft) | [Website](https://getartcraft.com/apps/soundcraft) |
 
 And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
 

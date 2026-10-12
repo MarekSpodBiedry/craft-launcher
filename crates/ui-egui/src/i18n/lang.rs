@@ -7,7 +7,7 @@ use super::detect::system_lang;
 
 /// One supported UI language.
 pub struct LangInfo {
-    /// Canonical BCP 47 code (`en`, `ru`, `zh-CN`). Also the `interfaceLanguage` value.
+    /// Canonical BCP 47 code (`en`, `ru`, `zh-CN`, `de`, `fr`). Also the `interfaceLanguage` value.
     pub code: &'static str,
     /// The language's name in itself, shown in the Preferences dropdown.
     pub name: &'static str,
@@ -18,8 +18,8 @@ pub struct LangInfo {
     pub cjk: bool,
     /// Catalog file contents (empty for the built-in English).
     pub source: &'static str,
-    /// Plural form index for a count (English: 0 = one, 1 = other; Russian: 0 = one, 1 = few,
-    /// 2 = many; Chinese: always 0).
+    /// Plural form index for a count (English and German: 0 = one, 1 = other; Russian: 0 = one,
+    /// 1 = few, 2 = many; French: 0 = one for 0 and 1; Chinese: always 0).
     pub plural: fn(u64) -> usize,
     /// Number of plural forms the catalog's `@plural` rows carry (checked by tests).
     pub plural_forms: usize,
@@ -30,6 +30,11 @@ pub struct LangInfo {
 
 fn plural_one_other(n: u64) -> usize {
     usize::from(n != 1)
+}
+
+/// French: 0 and 1 are singular ("0 mise à jour"), everything else plural.
+fn plural_zero_one(n: u64) -> usize {
+    usize::from(n > 1)
 }
 
 /// Languages whose nouns don't inflect for number (Chinese): one form for every count.
@@ -51,7 +56,7 @@ pub(super) fn plural_east_slavic(n: u64) -> usize {
 }
 
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 3] = [
+pub static LANGUAGES: [LangInfo; 6] = [
     LangInfo {
         code: "en",
         name: "English",
@@ -85,6 +90,39 @@ pub static LANGUAGES: [LangInfo; 3] = [
         complete_menus: true,
         catalog: OnceLock::new(),
     },
+    LangInfo {
+        code: "de",
+        name: "Deutsch",
+        english_name: "German",
+        cjk: false,
+        source: include_str!("de.tsv"),
+        plural: plural_one_other,
+        plural_forms: 2,
+        complete_menus: true,
+        catalog: OnceLock::new(),
+    },
+    LangInfo {
+        code: "fr",
+        name: "Français",
+        english_name: "French",
+        cjk: false,
+        source: include_str!("fr.tsv"),
+        plural: plural_zero_one,
+        plural_forms: 2,
+        complete_menus: true,
+        catalog: OnceLock::new(),
+    },
+    LangInfo {
+        code: "pt-BR",
+        name: "Português (Brasil)",
+        english_name: "Portuguese (Brazil)",
+        cjk: false,
+        source: include_str!("pt-BR.tsv"),
+        plural: plural_one_other,
+        plural_forms: 2,
+        complete_menus: true,
+        catalog: OnceLock::new(),
+    },
 ];
 
 impl LangInfo {
@@ -115,6 +153,9 @@ impl Lang {
     pub const EN: Lang = Lang(&LANGUAGES[0]);
     pub const RU: Lang = Lang(&LANGUAGES[1]);
     pub const ZH_CN: Lang = Lang(&LANGUAGES[2]);
+    pub const DE: Lang = Lang(&LANGUAGES[3]);
+    pub const FR: Lang = Lang(&LANGUAGES[4]);
+    pub const PT_BR: Lang = Lang(&LANGUAGES[5]);
 
     pub fn code(self) -> &'static str {
         self.0.code
@@ -180,6 +221,7 @@ pub fn lang_from_tag(tag: &str) -> Option<Lang> {
     match cands.last().map(String::as_str) {
         Some("c" | "posix") => Some(Lang::EN),
         Some("zh") => chinese(cands.first().map_or("zh", String::as_str)),
+        Some("pt") => Some(Lang::PT_BR),
         _ => cands.iter().find_map(|c| Lang::from_code(c)),
     }
 }

@@ -58,6 +58,9 @@ settings file must produce an error the user can act on, never a panic. Shared s
 ### Installing other people's software safely
 
 - Download only from `https://github.com/storytold/<app>/releases` (and GitHub's asset CDN).
+  The one exception is a developer's own loopback mirror (`ARTCRAFT_LAUNCHER_DOWNLOAD_BASE`,
+  `cargo xtask local`); keep it loopback-only and behind the `local-mirror` cargo feature, which
+  release builds never enable.
 - Verify each download against the release's `SHA256SUMS.txt` before running or installing it.
 - Never run an installer with elevated rights silently; tell the user what is about to happen.
 - Never delete a user's files outside what the launcher itself installed.
@@ -73,8 +76,8 @@ colour tokens by name (`theme::Tokens`). Build new UI from `widgets.rs`; never h
 
 Every user-facing string goes through `crates/ui-egui/src/i18n` (`tl!("…")` for literals, `fmt`
 for `{placeholders}`, `tn` for counts). English in the code is the lookup key; adding a string
-means adding its row to every catalog marked `complete_menus` (`ru.tsv`), which the i18n tests
-check. Product and app names (ArtCraft Launcher, Craft App Suite, PhotoCraft…) stay in English.
+means adding its row to every catalog marked `complete_menus` (`ru.tsv`, `zh-CN.tsv`, `de.tsv`),
+which the i18n tests check. Product and app names (ArtCraft Launcher, Craft App Suite, PhotoCraft…) stay in English.
 Chinese is drawn with the system's own CJK font (`crates/ui-egui/src/cjk_font.rs`, desktop only;
 English where there is none): never bundle a CJK font, they are 10 MB and more.
 
@@ -119,7 +122,7 @@ Release assets (keep these names exact; the launcher's own self-update and the R
 |---|---|
 | Windows | `artcraft-launcher-<ver>-windows-{x64,x86,arm64}.msi`, `…-windows-{x64,x86,arm64}-portable.zip` |
 | macOS | `artcraft-launcher-<ver>-macos-universal.dmg` |
-| Linux | `artcraft-launcher-<ver>-linux-{x86_64,aarch64}.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}` |
+| Linux | `artcraft-launcher-<ver>-linux-{x86_64,aarch64}.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}`, `artcraft-launcher-<ver>-linux-riscv64.{deb,rpm,tar.gz}` |
 | FreeBSD | `artcraft-launcher-<ver>-freebsd-x86_64.tar.gz` |
 | Web | `artcraft-launcher-web-<ver>.zip` |
 

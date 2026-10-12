@@ -223,9 +223,13 @@ impl NativeBackend {
         let paths = self.paths.clone();
         let platform = self.platform;
         let pre = self.options().prereleases;
+        let mirror = local_mirror();
         std::thread::spawn(move || {
             shared.emit(Event::CheckStarted);
-            let (feed, fallback) = if pre {
+            let (feed, fallback) = if let Some(base) = &mirror {
+                // A local mirror answers for everything: GitHub is never asked.
+                (local_feed(&http, base), Fallback { trust_feed: true, github_every: GITHUB_FALLBACK_EVERY })
+            } else if pre {
                 // The feed serves stable releases only; with pre-releases on, GitHub decides.
                 (None, Fallback { trust_feed: false, github_every: EARLY_GITHUB_EVERY })
             } else {
@@ -242,7 +246,10 @@ impl NativeBackend {
                     scope.spawn(|| {
                         loop {
                             let Some(app) = queue.lock().unwrap_or_else(PoisonError::into_inner).pop() else { break };
-                            let (latest, from, used) = latest_for(app, feed.as_ref(), fallback, source.as_ref(), &shared, pre, force, now);
+                            let (latest, from, used) = match &mirror {
+                                Some(_) => mirror_latest(app, feed.as_ref(), now),
+                                None => latest_for(app, feed.as_ref(), fallback, source.as_ref(), &shared, pre, force, now),
+                            };
                             if let Some(used) = used {
                                 sources.lock().unwrap_or_else(PoisonError::into_inner).push(used);
                             }
@@ -295,12 +302,14 @@ impl NativeBackend {
             let at = crate::now();
             *shared.last_check.lock().unwrap_or_else(PoisonError::into_inner) = Some(at);
             shared.checking.store(false, Ordering::SeqCst);
-            shared.emit(Event::CheckFinished { at, source: source_used, rate_limited_until: source.rate_limited_until() });
+            let rate_limited_until = limit_notice(source_used, source.rate_limited_until());
+            shared.emit(Event::CheckFinished { at, source: source_used, rate_limited_until });
         });
     }
 
     fn start_job(&self, app_id: &str, uninstall: bool) {
         let Some(app) = CraftApp::by_id(app_id) else { return };
+        log::info!("{}: starting {} job", app.name, if uninstall { "uninstall" } else { "install/update" });
         let stop = Arc::new(Stop::default());
         let restarting = {
             let mut jobs = self.shared.jobs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -467,7 +476,7 @@ fn run_install(
         shared.emit(Event::Progress { app: app.id.to_string(), phase: p });
     };
     let mut job = Job { http, paths, stop, phase: &mut phase };
-    let (new_record, verified) = install::install(app, &release, &asset, kind, existing, &mut job)?;
+    let (new_record, verified) = install::install(app, &release, &asset, kind, existing, record, &mut job)?;
     {
         let mut m = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner);
         let changed = match new_record {
@@ -690,6 +699,13 @@ fn latest_for(
     }
 }
 
+/// Until when the footer says GitHub's limit holds details back: only while it does, that is
+/// when this check had to settle for the release pages or saved answers. When the feed (or the
+/// API itself) answered everything, nothing is missing, however recently GitHub said no.
+fn limit_notice(source_used: Source, limited_until: Option<i64>) -> Option<i64> {
+    limited_until.filter(|_| matches!(source_used, Source::GitHubPages | Source::Cache))
+}
+
 /// The repo to ask GitHub about, following the feed's repo renames.
 fn feed_repo(feed: Option<&Feed>, app: &CraftApp) -> String {
     feed.map_or_else(|| app.repo.to_string(), |f| f.repo_for(app))
@@ -764,8 +780,66 @@ fn fetch_feed(http: &Http, paths: &Paths, url: &str, throttle: &Mutex<FeedThrott
 fn feed_url() -> String {
     std::env::var("ARTCRAFT_LAUNCHER_FEED_URL")
         .ok()
-        .filter(|u| u.starts_with("https://") || u.starts_with("http://127.0.0.1:") || u.starts_with("http://localhost:"))
+        .filter(|u| u.starts_with("https://") || is_loopback(u))
         .unwrap_or_else(|| artcraft_launcher_core::feed::FEED_URL.to_string())
+}
+
+/// `http://<loopback host>:<port>` and an optional path: the host must be exactly 127.0.0.1,
+/// localhost or [::1] (no `user@` in front of another host), with a numeric port.
+fn is_loopback(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let Some((host, port)) = authority.rsplit_once(':') else { return false };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]") && !port.is_empty() && port.parse::<u16>().is_ok()
+}
+
+/// `ARTCRAFT_LAUNCHER_DOWNLOAD_BASE`: a mirror on this machine (`cargo xtask local serve`) that
+/// serves `release_info.json` and the builds it lists. While it's set, releases come only from
+/// there (never GitHub or ArtCraft's API), and its download links are trusted. Loopback only, so
+/// nothing but the developer's own builds can be installed this way, and only in builds with the
+/// `local-mirror` feature: release builds ignore the variable.
+fn local_mirror() -> Option<String> {
+    if !cfg!(feature = "local-mirror") {
+        return None;
+    }
+    let base = std::env::var("ARTCRAFT_LAUNCHER_DOWNLOAD_BASE").ok()?;
+    let base = base.trim();
+    if !is_loopback(base) || base.contains(['?', '#', '\\']) {
+        log::warn!(
+            "ignoring ARTCRAFT_LAUNCHER_DOWNLOAD_BASE={base}: only http://127.0.0.1:<port>/, http://localhost:<port>/ or http://[::1]:<port>/"
+        );
+        return None;
+    }
+    Some(if base.ends_with('/') { base.to_string() } else { format!("{base}/") })
+}
+
+/// The local mirror's feed: `ARTCRAFT_LAUNCHER_FEED_URL` if set, else `release_info.json` beside
+/// the builds. Asked every check (it's on this machine), and never saved over ArtCraft's.
+fn local_feed(http: &Http, base: &str) -> Option<Feed> {
+    let url = std::env::var("ARTCRAFT_LAUNCHER_FEED_URL").ok().filter(|u| is_loopback(u)).unwrap_or_else(|| format!("{base}release_info.json"));
+    match http.get_feed(&url) {
+        Ok(body) => {
+            let feed = Feed::parse(&body).map(|f| f.with_mirror(base));
+            if feed.is_none() {
+                log::warn!("the local mirror's feed at {url} is unreadable");
+            }
+            feed
+        }
+        Err(e) => {
+            log::warn!("local mirror unavailable: {} (is `cargo xtask local serve` running?)", e.why);
+            None
+        }
+    }
+}
+
+/// `app`'s latest release according to the local mirror. An app it doesn't list has no release.
+fn mirror_latest(app: &CraftApp, feed: Option<&Feed>, now: i64) -> (Option<LatestRelease>, Origin, Option<Source>) {
+    let latest = match feed.map(|f| f.answer(app, now)) {
+        Some(FeedAnswer::Fresh(Some(r))) => LatestRelease::Found(r),
+        Some(FeedAnswer::Fresh(None) | FeedAnswer::AskGitHub) => LatestRelease::None,
+        None => LatestRelease::Failed("the local mirror didn't answer".into()),
+    };
+    (Some(latest), Origin::ArtCraftApi, Some(Source::Feed))
 }
 
 /// The last saved feed answer, if any.
@@ -1006,6 +1080,18 @@ mod tests {
     }
 
     #[test]
+    fn the_limit_notice_shows_only_while_details_are_missing() {
+        let until = Some(NOW + 31 * 60);
+        // GitHub said no earlier, but the feed has since answered every app: nothing to warn about.
+        assert_eq!(limit_notice(Source::Feed, until), None);
+        assert_eq!(limit_notice(Source::GitHubApi, until), None);
+        // Some apps came from the release pages or saved answers: say when the rest returns.
+        assert_eq!(limit_notice(Source::GitHubPages, until), until);
+        assert_eq!(limit_notice(Source::Cache, until), until);
+        assert_eq!(limit_notice(Source::Cache, None), None);
+    }
+
+    #[test]
     fn the_first_poll_tries_once_and_falls_back_at_once() {
         // Nothing has ever loaded and the feed didn't answer: GitHub, freely.
         let f = decide_fallback(false, false, true, 1, None, NOW);
@@ -1033,6 +1119,25 @@ mod tests {
         // Several checks in a row and an hour without an answer: GitHub takes over, hourly.
         let f = decide_fallback(false, true, false, SERIOUS_FEED_FAILURES, Some(NOW - SERIOUS_FEED_OUTAGE), NOW);
         assert_eq!(f, Fallback { trust_feed: false, github_every: GITHUB_FALLBACK_EVERY });
+    }
+
+    #[test]
+    fn a_local_mirror_answers_for_every_app_on_its_own() {
+        let photo = CraftApp::by_id("photocraft").unwrap();
+        let word = CraftApp::by_id("wordcraft").unwrap();
+        let feed = feed().with_mirror("http://127.0.0.1:8787/");
+        // Listed: found, even long after the sync.
+        let (latest, _, _) = mirror_latest(photo, Some(&feed), NOW + 30 * 86_400);
+        assert!(matches!(latest, Some(LatestRelease::Found(ref r)) if r.tag == "v0.6.0"));
+        // Not listed: no release (rather than asking GitHub).
+        assert!(matches!(mirror_latest(word, Some(&feed), NOW).0, Some(LatestRelease::None)));
+        // Not running: says so.
+        assert!(matches!(mirror_latest(photo, None, NOW).0, Some(LatestRelease::Failed(_))));
+        assert!(is_loopback("http://localhost:8787/") && is_loopback("http://[::1]:8787/"));
+        assert!(!is_loopback("http://192.168.1.2:8787/") && !is_loopback("http://localhost.evil.example/"));
+        assert!(!is_loopback("http://127.0.0.1:1@evil.example/") && !is_loopback("http://127.0.0.1:8787@evil.example:80/"));
+        assert!(!is_loopback("http://127.0.0.1/") && !is_loopback("http://127.0.0.1:x/") && !is_loopback("https://127.0.0.1:8787/"));
+        assert!(is_loopback("http://127.0.0.1:8787") && is_loopback("http://127.0.0.1:8787/release_info.json"));
     }
 
     #[test]
@@ -1080,7 +1185,8 @@ mod tests {
     /// installs is there.
     fn release(version: &str) -> Release {
         let suffixes = ["-portable.zip", ".tar.gz", ".msi", ".dmg", ".AppImage", ".deb", ".rpm", ".flatpak"];
-        let tokens = ["windows-x64", "windows-x86", "windows-arm64", "macos-universal", "linux-x86_64", "linux-aarch64", "freebsd-x86_64"];
+        let tokens =
+            ["windows-x64", "windows-x86", "windows-arm64", "macos-universal", "linux-x86_64", "linux-aarch64", "linux-riscv64", "freebsd-x86_64"];
         let assets = tokens
             .iter()
             .flat_map(|t| suffixes.iter().map(move |s| format!("{APP}-{version}-{t}{s}")))

@@ -51,15 +51,23 @@ pub fn hud(ui: &mut Ui, text: &str, color: Color32) -> Response {
     resp
 }
 
-/// "01 / Classic apps": a section eyebrow, the index faint.
-pub fn eyebrow(ui: &mut Ui, index: &str, label: &str) {
-    let t = Tokens::get(ui.ctx());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        hud(ui, index, t.faint);
-        hud(ui, " / ", t.faint);
-        hud(ui, label, t.muted);
-    });
+/// A mono label cut to one line with "…" where it is wider than `max_width`; the full text shows
+/// on hover and is what screen readers read.
+pub fn hud_elided(ui: &mut Ui, text: &str, color: Color32, max_width: f32) -> Response {
+    let format = egui::TextFormat {
+        font_id: egui::FontId::new(theme::HUD_SIZE, theme::mono()),
+        color,
+        extra_letter_spacing: theme::HUD_SPACING,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::single_section(text.to_uppercase(), format);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.min(ui.available_width()).max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let elided = galley.elided;
+    let (rect, resp) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    paint_left(ui, rect, galley, color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    if elided { resp.on_hover_text(text) } else { resp }
 }
 
 /// A solid chip with a bold mono label: an app's number tab (the site's `AppTab`).

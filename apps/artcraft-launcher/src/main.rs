@@ -12,6 +12,7 @@ mod tray;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
@@ -29,7 +30,7 @@ const SETTINGS_KEY: &str = "settings";
 type Wake = Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>;
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Detect system language in the background so the first frame can use it.
     artcraft_launcher_ui_egui::i18n::detect_system_lang_in_background();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,12 +41,12 @@ fn main() -> ExitCode {
     let mut hidden = args.iter().any(|a| a == login::HIDDEN_FLAG);
 
     let wake: Wake = Arc::new(OnceLock::new());
-    let show_requests = match single_instance::claim(wake.clone()) {
+    let starts = match single_instance::claim(wake.clone()) {
         Instance::Secondary => return ExitCode::SUCCESS,
         Instance::Primary(rx) => rx,
     };
     let (tray_loop, woken) = sync_channel(1);
-    let waker = Arc::new(Waker { window: Mutex::new(None), tray_loop });
+    let waker = Arc::new(Waker { window: Mutex::new(None), tray_loop, quit_pending: AtomicBool::new(false) });
     {
         let waker = waker.clone();
         let _ = wake.set(Box::new(move || waker.wake()));
@@ -53,7 +54,7 @@ fn main() -> ExitCode {
 
     let backend_waker = waker.clone();
     let settings_path = settings_file::path(APP_ID);
-    let mut launcher = Launcher::new(Box::new(NativeBackend::new(move || backend_waker.wake())), show_requests, settings_path.clone());
+    let mut launcher = Launcher::new(Box::new(NativeBackend::new(move || backend_waker.wake())), starts, settings_path.clone());
     // Started hidden at login where a window can't hide: start in the tray without mapping one,
     // so no window flashes up. Without a tray to come back from, the window opens after all.
     let mut window = true;
@@ -119,15 +120,49 @@ fn native_options(hidden: bool) -> eframe::NativeOptions {
 /// Vulkan goes through vendor ICDs and third-party overlay layers, and on hybrid AMD laptops whose
 /// integrated and discrete GPUs run different driver packages (common on OEM machines, where the
 /// Adrenalin installer leaves the integrated GPU on the OEM driver) it crashes inside
-/// `amdvlk64.dll` before the first frame. `WGPU_BACKEND` still overrides the default.
+/// `amdvlk64.dll` before the first frame. `WGPU_BACKEND` still overrides the default, and then
+/// wgpu picks the adapter itself.
 #[cfg(windows)]
 fn wgpu_options() -> eframe::WgpuConfiguration {
-    use eframe::wgpu::Backends;
+    use eframe::wgpu::{Backends, PowerPreference};
     let mut config = eframe::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
-        setup.instance_descriptor.backends = Backends::from_env().unwrap_or(Backends::DX12 | Backends::GL);
+        if let Some(backends) = Backends::from_env() {
+            setup.instance_descriptor.backends = backends;
+        } else {
+            setup.instance_descriptor.backends = Backends::DX12 | Backends::GL;
+            let integrated = setup.power_preference == PowerPreference::LowPower;
+            setup.native_adapter_selector = Some(Arc::new(move |adapters, surface| {
+                adapters
+                    .iter()
+                    .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
+                    .min_by_key(|a| {
+                        let info = a.get_info();
+                        adapter_rank(info.backend, info.device_type, integrated)
+                    })
+                    .cloned()
+                    .ok_or_else(|| "no graphics adapter can draw to the window".to_owned())
+            }));
+        }
     }
     config
+}
+
+/// wgpu's own adapter order (by device type, then enumeration order), except that any Direct3D 12
+/// adapter, the WARP software one included, comes before GL. wgpu ranks WARP last, so on GPUs with
+/// no D3D12 driver (Intel HD 4000, Radeon TeraScale) it picked the GL one, whose legacy driver
+/// failed `Surface::configure` and wgpu panicked before the window opened.
+#[cfg(any(windows, test))]
+fn adapter_rank(backend: eframe::wgpu::Backend, device_type: eframe::wgpu::DeviceType, integrated: bool) -> (bool, u8) {
+    use eframe::wgpu::{Backend, DeviceType};
+    let device = match device_type {
+        DeviceType::DiscreteGpu => 1 + u8::from(integrated),
+        DeviceType::IntegratedGpu => 2 - u8::from(integrated),
+        DeviceType::Other => 3,
+        DeviceType::VirtualGpu => 4,
+        DeviceType::Cpu => 5,
+    };
+    (backend != Backend::Dx12, device)
 }
 
 #[cfg(not(windows))]
@@ -139,7 +174,12 @@ fn wgpu_options() -> eframe::WgpuConfiguration {
 struct Waker {
     window: Mutex<Option<egui::Context>>,
     tray_loop: SyncSender<()>,
+    /// Quit was picked in the tray and no tick has taken it up yet.
+    quit_pending: AtomicBool,
 }
+
+/// How long a tray Quit may wait for the window to take it up before the launcher exits anyway.
+const QUIT_GRACE: Duration = Duration::from_secs(2);
 
 impl Waker {
     fn wake(&self) {
@@ -147,6 +187,30 @@ impl Waker {
             ctx.request_repaint();
         }
         let _ = self.tray_loop.try_send(());
+    }
+
+    /// Quit was picked in the tray. A minimized window may get no frames at all (Wayland sends none),
+    /// so the quit would wait until the window is restored: if no tick has taken it up in time, exit.
+    fn quit_from_tray(self: &Arc<Self>) {
+        self.quit_pending.store(true, Ordering::SeqCst);
+        let waker = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(QUIT_GRACE);
+            if waker.quit_unseen() {
+                log::warn!("the window did not answer a quit from the tray: exiting");
+                std::process::exit(0);
+            }
+        });
+    }
+
+    /// A tick took up the quit.
+    fn quit_seen(&self) {
+        self.quit_pending.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether a quit from the tray is still waiting (and no longer is).
+    fn quit_unseen(&self) -> bool {
+        self.quit_pending.swap(false, Ordering::SeqCst)
     }
 
     fn set_window(&self, ctx: Option<egui::Context>) {
@@ -271,7 +335,8 @@ struct Launcher {
     ui: LauncherUi,
     tray: Option<tray::Tray>,
     host: DesktopHost,
-    show_requests: Receiver<()>,
+    /// Requests from later starts of the launcher.
+    starts: Receiver<single_instance::Request>,
     /// Stands in for a window's context while only the tray exists. A window can't reuse it: a
     /// new window's renderer has none of the textures a used context has already handed out.
     windowless: egui::Context,
@@ -283,10 +348,11 @@ struct Launcher {
     closed_to_tray: bool,
     /// eframe's settings file, which the launcher writes itself while there is no window.
     settings_path: Option<PathBuf>,
+    waker: Option<Arc<Waker>>,
 }
 
 impl Launcher {
-    fn new(backend: Box<dyn Backend>, show_requests: Receiver<()>, settings_path: Option<PathBuf>) -> Self {
+    fn new(backend: Box<dyn Backend>, starts: Receiver<single_instance::Request>, settings_path: Option<PathBuf>) -> Self {
         let windowless = egui::Context::default();
         let (asked, run_again) = channel();
         windowless.set_request_repaint_callback(move |info| {
@@ -296,12 +362,13 @@ impl Launcher {
             ui: LauncherUi::new(&windowless, backend, Settings::default()),
             tray: None,
             host: DesktopHost { tray: false, quit: false },
-            show_requests,
+            starts,
             windowless,
             run_again,
             started: false,
             closed_to_tray: false,
             settings_path,
+            waker: None,
         }
     }
 
@@ -312,8 +379,9 @@ impl Launcher {
         if let Some(settings) = settings {
             self.ui.settings = settings;
         }
-        let waker = waker.clone();
-        match tray::Tray::new(move || waker.wake()) {
+        self.waker = Some(waker.clone());
+        let (wake, on_quit) = (waker.clone(), waker.clone());
+        match tray::Tray::new(move || wake.wake(), move || on_quit.quit_from_tray()) {
             Ok(t) => self.tray = Some(t),
             Err(e) => log::warn!("no tray icon: {e}"),
         }
@@ -342,7 +410,11 @@ impl Launcher {
     fn tick(&mut self, ctx: &egui::Context) -> Vec<Request> {
         self.ui.logic(ctx, &mut self.host);
         let mut requests = Vec::new();
-        if self.show_requests.try_iter().count() > 0 {
+        let starts: Vec<single_instance::Request> = self.starts.try_iter().collect();
+        if starts.contains(&single_instance::Request::Replace) && !self.ui.busy() {
+            // A newer launcher is starting and takes over once this one has quit.
+            requests.push(Request::Quit);
+        } else if !starts.is_empty() {
             requests.push(Request::Show);
         }
         let actions = self.tray.as_ref().map(tray::Tray::actions).unwrap_or_default();
@@ -357,7 +429,12 @@ impl Launcher {
                         log::warn!("couldn't open {url}: {e}");
                     }
                 }
-                tray::TrayAction::Quit => requests.push(Request::Quit),
+                tray::TrayAction::Quit => {
+                    if let Some(waker) = &self.waker {
+                        waker.quit_seen();
+                    }
+                    requests.push(Request::Quit);
+                }
             }
         }
         if let Some(t) = self.tray.as_mut() {
@@ -571,7 +648,7 @@ mod tests {
     }
 
     /// A launcher with no tray and no window, the sender of its show requests, and its backend's record.
-    fn launcher() -> (Launcher, Sender<()>, Arc<Seen>) {
+    fn launcher() -> (Launcher, Sender<single_instance::Request>, Arc<Seen>) {
         let seen = Arc::new(Seen { clock: AtomicI64::new(NOW), ..Seen::default() });
         let (show, show_requests) = channel();
         (Launcher::new(Box::new(Quiet(seen.clone())), show_requests, None), show, seen)
@@ -643,7 +720,7 @@ mod tests {
     fn with_no_window_a_show_request_opens_one() {
         let (mut launcher, show, _) = launcher();
         let (_wake, woken) = sync_channel(1);
-        assert!(show.send(()).is_ok());
+        assert!(show.send(single_instance::Request::Show).is_ok());
         assert!(launcher.wait_in_tray(&woken));
     }
 
@@ -651,7 +728,7 @@ mod tests {
     fn with_no_window_quit_wins_over_a_show_request() {
         let (mut launcher, show, _) = launcher();
         let (_wake, woken) = sync_channel(1);
-        assert!(show.send(()).is_ok());
+        assert!(show.send(single_instance::Request::Show).is_ok());
         launcher.host.quit();
         assert!(!launcher.wait_in_tray(&woken));
     }
@@ -665,7 +742,7 @@ mod tests {
         let pause = Duration::from_millis(200);
         let waking = std::thread::spawn(move || {
             std::thread::sleep(pause);
-            let _ = show.send(());
+            let _ = show.send(single_instance::Request::Show);
             let _ = wake.try_send(());
         });
         let started = Instant::now();
@@ -735,6 +812,17 @@ mod tests {
     }
 
     #[test]
+    fn a_tray_quit_nobody_took_up_ends_the_launcher() {
+        let (tray_loop, _woken) = sync_channel(1);
+        let waker = Waker { window: Mutex::new(None), tray_loop, quit_pending: AtomicBool::new(true) };
+        assert!(waker.quit_unseen());
+        assert!(!waker.quit_unseen());
+        waker.quit_pending.store(true, Ordering::SeqCst);
+        waker.quit_seen();
+        assert!(!waker.quit_unseen());
+    }
+
+    #[test]
     fn quitting_overrides_a_close_to_the_tray() {
         let (mut launcher, _show, _) = launcher();
         let ctx = launcher.windowless.clone();
@@ -753,5 +841,19 @@ mod tests {
         shell.put_away(&ctx);
         assert!(!shell.visible);
         assert!(!shell.launcher.closed_to_tray);
+    }
+
+    #[test]
+    fn warp_beats_a_gl_gpu_but_not_a_d3d12_gpu() {
+        use eframe::wgpu::{Backend, DeviceType};
+        // Intel HD 4000 + Radeon HD 7600M have no D3D12 driver; their GL one fails to configure.
+        let warp = adapter_rank(Backend::Dx12, DeviceType::Cpu, false);
+        assert!(warp < adapter_rank(Backend::Gl, DeviceType::IntegratedGpu, false));
+        assert!(warp < adapter_rank(Backend::Gl, DeviceType::Other, false));
+        // Hardware D3D12 still wins, in wgpu's order for the power preference.
+        let (discrete, integrated) = (DeviceType::DiscreteGpu, DeviceType::IntegratedGpu);
+        assert!(adapter_rank(Backend::Dx12, integrated, false) < warp);
+        assert!(adapter_rank(Backend::Dx12, discrete, false) < adapter_rank(Backend::Dx12, integrated, false));
+        assert!(adapter_rank(Backend::Dx12, integrated, true) < adapter_rank(Backend::Dx12, discrete, true));
     }
 }

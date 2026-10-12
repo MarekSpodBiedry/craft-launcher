@@ -483,18 +483,19 @@ fn links_to_the_website_github_and_each_apps_pages() {
     for label in ["Website", "GitHub", "Discord"] {
         assert!(h.query_all_by_label(label).count() >= 1, "{label}");
     }
-    // Cards: every app links to its repo; only the seven classic apps have a website (plus the footer's).
+    // Cards: every app links to its repo and to its own page on getartcraft.com (plus the footer's).
     let shown_cards = h.query_all_by_label("GitHub").count() - 1;
     let shown_sites = h.query_all_by_label("Website").count() - 1;
-    assert!(shown_cards >= 7, "{shown_cards}");
-    assert_eq!(shown_sites, 7, "only classic apps have website pages");
-    // The table's … menu has the app's GitHub repo and, for a new app, no website yet.
+    assert!(shown_cards >= 12, "{shown_cards}");
+    assert_eq!(shown_sites, 12, "every app has a website page");
+    // The table's … menu has the app's website and GitHub repo.
     let (mut h, _) = harness(ViewMode::Table, egui::Theme::Dark, true);
     h.run_steps(6);
     h.get_all_by_label("…").nth(7).unwrap().click(); // WordCraft
     h.run_steps(3);
     h.get_by_label("GitHub repository");
-    h.get_by_label("Website (coming soon)");
+    // The footer's Website link and WordCraft's now-live one in the menu.
+    assert!(h.query_all_by_label_contains("Website").count() >= 2);
 }
 
 /// Clicks the `n`th widget labelled `label` and returns the URL the app asked to open.
@@ -649,6 +650,24 @@ fn the_launcher_updates_itself_and_quits_to_restart() {
 }
 
 #[test]
+fn launcher_update_prompts_to_relaunch_with_updated_version() {
+    let mut ev = events();
+    ev.push(Event::LauncherUpdate(release("artcraft-launcher", "0.2.0", NOW)));
+    let (mut h, _) = harness_with(ev, ViewMode::Grid, egui::Theme::Dark, true, 1.0);
+    h.run_steps(6);
+    // Dialog pops up on launch with the update prompt
+    h.get_by_label_contains("ArtCraft Launcher 0.2.0 is available");
+    h.get_by_label("A new version is available. Would you like to relaunch with the updated version?");
+    h.get_by_label("What's new");
+    // Clicking "Later" dismisses the modal dialog
+    h.get_by_label("Later").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("A new version is available. Would you like to relaunch with the updated version?").is_none());
+    // Toolbar update banner is now visible with Update and restart
+    h.get_by_label("Update and restart");
+}
+
+#[test]
 fn the_current_desktop_setting_is_only_offered_where_the_os_has_desktops() {
     // NoHost has no desktops (Windows, Linux, web): no setting.
     let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
@@ -718,6 +737,61 @@ fn automatic_checks_run_every_five_minutes() {
 }
 
 #[test]
+fn automatic_updates_queue_installs_for_outdated_apps_and_launcher() {
+    let mut ev = events();
+    ev.push(Event::LauncherUpdate(release("artcraft-launcher", "0.2.0", NOW)));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let sent2 = sent.clone();
+    let mut backend = Some(Fake { events: ev, sent: sent2, manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
+        move |ui, state: &mut Option<LauncherUi>| {
+            if state.is_none()
+                && let Some(b) = backend.take()
+            {
+                *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { auto_update: true, notify: false, ..Settings::default() }));
+            }
+            if let Some(l) = state.as_mut() {
+                l.logic(&ui.ctx().clone(), &mut NoHost);
+                l.ui(ui, &mut NoHost);
+            }
+        },
+        None,
+    );
+    h.run_steps(4);
+    let commands = sent.borrow().clone();
+    assert!(commands.contains(&Command::Install { app: "photocraft".into() }), "outdated photocraft should be queued for install: {commands:?}");
+    assert!(commands.contains(&Command::Install { app: "effectcraft".into() }), "outdated effectcraft should be queued for install: {commands:?}");
+    assert!(commands.contains(&Command::UpdateLauncher), "launcher update should be queued: {commands:?}");
+}
+
+#[test]
+fn automatic_updates_are_disabled_by_default() {
+    let mut ev = events();
+    ev.push(Event::LauncherUpdate(release("artcraft-launcher", "0.2.0", NOW)));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let sent2 = sent.clone();
+    let mut backend = Some(Fake { events: ev, sent: sent2, manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
+        move |ui, state: &mut Option<LauncherUi>| {
+            if state.is_none()
+                && let Some(b) = backend.take()
+            {
+                *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { auto_update: false, notify: false, ..Settings::default() }));
+            }
+            if let Some(l) = state.as_mut() {
+                l.logic(&ui.ctx().clone(), &mut NoHost);
+                l.ui(ui, &mut NoHost);
+            }
+        },
+        None,
+    );
+    h.run_steps(4);
+    let commands = sent.borrow().clone();
+    assert!(!commands.contains(&Command::Install { app: "photocraft".into() }), "photocraft should not be auto-installed when auto_update is false");
+    assert!(!commands.contains(&Command::UpdateLauncher), "launcher should not be auto-updated when auto_update is false");
+}
+
+#[test]
 fn the_footer_names_the_services_behind_what_is_on_screen() {
     let footer = |extra: Vec<Event>| {
         let mut evs = events();
@@ -767,7 +841,7 @@ fn custom_title_bar_has_window_buttons() {
         }
     }
     let mut backend = Some(Fake { events: events(), sent: Rc::new(RefCell::new(Vec::new())), manage: true, clock: Rc::new(Cell::new(NOW)) });
-    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).wgpu().build_ui_state(
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
                 && let Some(b) = backend.take()
@@ -789,4 +863,48 @@ fn custom_title_bar_has_window_buttons() {
     h.step();
     let closes = h.output().viewport_output.values().any(|v| v.commands.contains(&egui::ViewportCommand::Close));
     assert!(closes, "the close button asks the window to close (the shell decides whether that hides it to the tray)");
+}
+
+#[test]
+fn the_rate_limit_notice_never_runs_under_the_footer_links() {
+    for width in [720.0, 960.0, 1180.0] {
+        let mut evs = events();
+        evs.push(Event::CheckFinished { at: NOW - 180, source: Source::GitHubApi, rate_limited_until: Some(NOW + 1800) });
+        let mut backend = Some(Fake { events: evs, sent: Rc::new(RefCell::new(Vec::new())), manage: true, clock: Rc::new(Cell::new(NOW)) });
+        let mut h = Harness::builder().with_size(egui::vec2(width, 900.0)).build_ui_state(
+            move |ui, state: &mut Option<LauncherUi>| {
+                if state.is_none()
+                    && let Some(b) = backend.take()
+                {
+                    *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { notify: false, ..Settings::default() }));
+                }
+                if let Some(l) = state.as_mut() {
+                    l.logic(&ui.ctx().clone(), &mut NoHost);
+                    l.ui(ui, &mut NoHost);
+                }
+            },
+            None,
+        );
+        h.run_steps(6);
+        snapshot(&mut h, &format!("footer-rate-limited-{width}"));
+        // Full or short, the notice says when GitHub can be asked again.
+        let notice = h.get_by_label_contains("in 30 min").rect();
+        let checked = h.get_by_label_contains("Checked ").rect();
+        // Cut short in a narrow window, but enough of it left to read.
+        assert!(notice.width() >= 120.0 && notice.right() <= width, "{width}: notice {notice:?}");
+        // Everything on the footer's right: the three links, the social icons and (when there's
+        // room) the platform.
+        let mut right = Vec::new();
+        for label in ["Website", "GitHub", "Discord", "X", "YouTube", "TikTok", "Instagram", "LinkedIn"] {
+            right.extend(h.query_all_by_label(label).map(|n| n.rect()).filter(|r| (r.center().y - notice.center().y).abs() < 12.0));
+        }
+        assert_eq!(right.len(), 8, "{width}: {right:?}");
+        let platform = h.query_by_label_contains("Installing for").map(|n| n.rect());
+        assert_eq!(platform.is_some(), width > 720.0, "{width}: the platform label shows unless the window is narrow");
+        right.extend(platform);
+        for r in right {
+            assert!(!r.intersects(notice), "{width}: notice {notice:?} overlaps {r:?}");
+            assert!(!r.intersects(checked), "{width}: check time {checked:?} overlaps {r:?}");
+        }
+    }
 }
