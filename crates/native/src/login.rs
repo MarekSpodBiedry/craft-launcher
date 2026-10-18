@@ -69,7 +69,7 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
             .create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
             .map_err(|e| format!("couldn't change the startup list ({e})"))?;
         if on {
-            let value = format!("\"{}\" {HIDDEN_FLAG}", program()?.display());
+            let value = run_value(&program()?);
             key.set_value("ArtCraft Launcher", &value).map_err(|e| format!("couldn't change the startup list ({e})"))
         } else {
             match key.delete_value("ArtCraft Launcher") {
@@ -93,6 +93,44 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
     }
 }
 
+/// The `Run` value for a launcher at `exe`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn run_value(exe: &std::path::Path) -> String {
+    format!("\"{}\" {HIDDEN_FLAG}", exe.display())
+}
+
+/// The `Run` value to write instead of `stored` for a launcher at `exe`, if `stored` starts something else.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn repointed(stored: &str, exe: &std::path::Path) -> Option<String> {
+    let value = run_value(exe);
+    (value != stored).then_some(value)
+}
+
+/// Windows: if start at login is on but the `Run` value names a different path than this executable
+/// (the launcher was moved or reinstalled into another folder), rewrite it, so the next login starts
+/// this copy instead of a missing one.
+pub fn refresh() {
+    #[cfg(windows)]
+    {
+        let Some(stored) = windows_run().and_then(|k| k.get_value::<String, _>("ArtCraft Launcher").ok()) else {
+            return;
+        };
+        let exe = match program() {
+            Ok(exe) => exe,
+            Err(e) => {
+                log::warn!("start at login not refreshed: {e}");
+                return;
+            }
+        };
+        if let Some(value) = repointed(&stored, &exe) {
+            match set_enabled(true) {
+                Ok(()) => log::info!("start at login now points at {value} (was {stored})"),
+                Err(e) => log::warn!("start at login not refreshed: {e}"),
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 fn windows_run() -> Option<winreg::RegKey> {
     winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run").ok()
@@ -109,5 +147,24 @@ fn remove(path: &std::path::Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("couldn't remove {} ({e})", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn run_value_quotes_the_path_and_starts_hidden() {
+        assert_eq!(run_value(Path::new("C:/Program Files/ArtCraft/launcher.exe")), "\"C:/Program Files/ArtCraft/launcher.exe\" --hidden");
+    }
+
+    #[test]
+    fn a_run_value_for_an_old_location_is_repointed_at_this_one() {
+        let new = Path::new("C:/New/launcher.exe");
+        let old = run_value(Path::new("C:/Old/launcher.exe"));
+        assert_eq!(repointed(&old, new), Some("\"C:/New/launcher.exe\" --hidden".to_string()));
+        assert_eq!(repointed(&run_value(new), new), None);
     }
 }
