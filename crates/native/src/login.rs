@@ -99,16 +99,28 @@ fn run_value(exe: &std::path::Path) -> String {
     format!("\"{}\" {HIDDEN_FLAG}", exe.display())
 }
 
-/// The `Run` value to write instead of `stored` for a launcher at `exe`, if `stored` starts something else.
+/// The program a `Run` value starts: the quoted path, or the text before `--hidden` when it isn't quoted.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn repointed(stored: &str, exe: &std::path::Path) -> Option<String> {
-    let value = run_value(exe);
-    (value != stored).then_some(value)
+fn stored_program(stored: &str) -> &str {
+    let stored = stored.trim();
+    match stored.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(rest),
+        None => stored.strip_suffix(HIDDEN_FLAG).unwrap_or(stored).trim(),
+    }
 }
 
-/// Windows: if start at login is on but the `Run` value names a different path than this executable
-/// (the launcher was moved or reinstalled into another folder), rewrite it, so the next login starts
-/// this copy instead of a missing one.
+/// The `Run` value to write instead of `stored` for a launcher at `exe`, if `stored` starts a program that
+/// no longer exists. A value whose program is still there is left alone, so a second copy (portable, dev
+/// build) can't take over the entry.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn repointed(stored: &str, exe: &std::path::Path, exists: impl Fn(&std::path::Path) -> bool) -> Option<String> {
+    let value = run_value(exe);
+    (value != stored && !exists(std::path::Path::new(stored_program(stored)))).then_some(value)
+}
+
+/// Windows: if start at login is on but the `Run` value names a program that no longer exists (the
+/// launcher was moved or reinstalled into another folder), rewrite it to this executable, so the next
+/// login starts it instead of a missing one. An entry whose program still exists is not touched.
 pub fn refresh() {
     #[cfg(windows)]
     {
@@ -122,7 +134,7 @@ pub fn refresh() {
                 return;
             }
         };
-        if let Some(value) = repointed(&stored, &exe) {
+        if let Some(value) = repointed(&stored, &exe, |p| p.exists()) {
             match set_enabled(true) {
                 Ok(()) => log::info!("start at login now points at {value} (was {stored})"),
                 Err(e) => log::warn!("start at login not refreshed: {e}"),
@@ -161,10 +173,24 @@ mod tests {
     }
 
     #[test]
-    fn a_run_value_for_an_old_location_is_repointed_at_this_one() {
+    fn a_run_value_for_a_missing_program_is_repointed_at_this_one() {
         let new = Path::new("C:/New/launcher.exe");
         let old = run_value(Path::new("C:/Old/launcher.exe"));
-        assert_eq!(repointed(&old, new), Some("\"C:/New/launcher.exe\" --hidden".to_string()));
-        assert_eq!(repointed(&run_value(new), new), None);
+        assert_eq!(repointed(&old, new, |_| false), Some("\"C:/New/launcher.exe\" --hidden".to_string()));
+        assert_eq!(repointed(&run_value(new), new, |_| false), None);
+    }
+
+    #[test]
+    fn a_run_value_for_another_program_that_still_exists_is_left_alone() {
+        let other = run_value(Path::new("C:/Program Files/ArtCraft/launcher.exe"));
+        let existing = Path::new("C:/Program Files/ArtCraft/launcher.exe");
+        assert_eq!(repointed(&other, Path::new("D:/Portable/launcher.exe"), |p| p == existing), None);
+    }
+
+    #[test]
+    fn stored_program_reads_quoted_and_unquoted_values() {
+        assert_eq!(stored_program("\"C:/Program Files/A/launcher.exe\" --hidden"), "C:/Program Files/A/launcher.exe");
+        assert_eq!(stored_program("C:/A/launcher.exe --hidden"), "C:/A/launcher.exe");
+        assert_eq!(stored_program("C:/A/launcher.exe"), "C:/A/launcher.exe");
     }
 }
